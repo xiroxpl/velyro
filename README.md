@@ -21,7 +21,7 @@ Simple, modern desktop app for converting video, audio, and image files on Windo
 
 ## Download
 
-Get the latest version from the [Releases page](https://github.com/xiroxpl/velyro/releases/latest) — download `Velyro_Instalator.exe`, run it, and you're done. It creates a Start Menu entry and a desktop shortcut.
+Get the latest version from the [Releases page](https://github.com/xiroxpl/velyro/releases/latest) — download `instalator.exe`, run it, and you're done. It creates a Start Menu entry and a desktop shortcut.
 
 > **Note:** Windows SmartScreen may warn about an unrecognized app since it isn't code-signed. Click **More info → Run anyway** to proceed.
 
