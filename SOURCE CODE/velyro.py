@@ -1,0 +1,367 @@
+import os
+import sys
+import ctypes
+import threading
+import subprocess
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+try:
+    from PIL import Image, ImageTk
+except ImportError:
+    Image = None
+    ImageTk = None
+
+try:
+    import imageio_ffmpeg
+except ImportError:
+    imageio_ffmpeg = None
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    BazaOkna = TkinterDnD.Tk
+    OBSLUGA_DND = True
+except ImportError:
+    BazaOkna = tk.Tk
+    OBSLUGA_DND = False
+
+BG = "#121317"
+BG_PANEL = "#191b21"
+BG_INPUT = "#1e2129"
+FG = "#e9e9ec"
+FG_MUTED = "#8a8d98"
+ACCENT = "#2f7dfd"
+ACCENT_HOVER = "#4c90ff"
+BORDER = "#2a2d36"
+
+VIDEO_AUDIO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".wmv", ".flv",
+                    ".wav", ".mp3", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".opus"}
+IMAGE_EXT = {".webp", ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".ico"}
+
+AUDIO_VIDEO_TARGETS = ["mp3", "wav", "ogg", "flac", "aac", "m4a", "wma", "opus",
+                        "mp4", "avi", "mkv", "mov", "webm", "wmv"]
+IMAGE_TARGETS = ["jpg", "png", "webp", "bmp", "gif", "tiff", "ico"]
+
+def sciezka_zasobu(nazwa):
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, nazwa)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), nazwa)
+
+
+def zasob_ffmpeg():
+    dolaczony = sciezka_zasobu("ffmpeg.exe")
+    if os.path.isfile(dolaczony):
+        return dolaczony
+    if imageio_ffmpeg is None:
+        return None
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def konwertuj_audio_wideo(plik_wejsciowy, folder_wyjsciowy, format_docelowy, log):
+    ffmpeg = zasob_ffmpeg()
+    if ffmpeg is None:
+        raise RuntimeError("Brak modułu imageio-ffmpeg")
+    nazwa = os.path.splitext(os.path.basename(plik_wejsciowy))[0]
+    sciezka_wyjsciowa = os.path.join(folder_wyjsciowy, f"{nazwa}.{format_docelowy}")
+    polecenie = [ffmpeg, "-y", "-i", plik_wejsciowy]
+    if format_docelowy in ("mp3", "wav", "ogg", "flac", "m4a", "aac", "wma", "opus"):
+        polecenie += ["-vn"]
+    polecenie += [sciezka_wyjsciowa]
+    log(f"Konwersja: {os.path.basename(plik_wejsciowy)} -> {format_docelowy}")
+    flagi = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    wynik = subprocess.run(polecenie, capture_output=True, text=True, creationflags=flagi)
+    if wynik.returncode != 0:
+        raise RuntimeError(wynik.stderr[-500:])
+    return sciezka_wyjsciowa
+
+
+def konwertuj_obraz(plik_wejsciowy, folder_wyjsciowy, format_docelowy, log):
+    if Image is None:
+        raise RuntimeError("Brak modułu Pillow")
+    nazwa = os.path.splitext(os.path.basename(plik_wejsciowy))[0]
+    sciezka_wyjsciowa = os.path.join(folder_wyjsciowy, f"{nazwa}.{format_docelowy}")
+    log(f"Konwersja: {os.path.basename(plik_wejsciowy)} -> {format_docelowy}")
+    obraz = Image.open(plik_wejsciowy)
+    if format_docelowy in ("jpg", "jpeg") and obraz.mode in ("RGBA", "P"):
+        obraz = obraz.convert("RGB")
+    zapis_format = "JPEG" if format_docelowy in ("jpg", "jpeg") else format_docelowy.upper()
+    if format_docelowy == "ico":
+        obraz.save(sciezka_wyjsciowa, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (256, 256)])
+    else:
+        obraz.save(sciezka_wyjsciowa, zapis_format)
+    return sciezka_wyjsciowa
+
+
+class PrzyciskKropka(tk.Canvas):
+    def __init__(self, master, kolor, kolor_hover, polecenie, **kw):
+        super().__init__(master, width=14, height=14, bg=BG_PANEL, highlightthickness=0, **kw)
+        self.kolor = kolor
+        self.kolor_hover = kolor_hover
+        self.polecenie = polecenie
+        self.owal = self.create_oval(1, 1, 13, 13, fill=kolor, outline="")
+        self.bind("<Enter>", lambda e: self.itemconfig(self.owal, fill=kolor_hover))
+        self.bind("<Leave>", lambda e: self.itemconfig(self.owal, fill=kolor))
+        self.bind("<Button-1>", lambda e: self.polecenie())
+
+
+class PrzyciskAkcji(tk.Frame):
+    def __init__(self, master, tekst, polecenie, wypelniony=True, **kw):
+        super().__init__(master, bg=ACCENT if wypelniony else BG_INPUT, **kw)
+        kolor_tla = ACCENT if wypelniony else BG_INPUT
+        kolor_hover = ACCENT_HOVER if wypelniony else BORDER
+        self.etykieta = tk.Label(self, text=tekst, bg=kolor_tla, fg=FG,
+                                  font=("Segoe UI", 10), padx=16, pady=8, cursor="hand2")
+        self.etykieta.pack()
+        for widget in (self, self.etykieta):
+            widget.bind("<Enter>", lambda e: self._koloruj(kolor_hover))
+            widget.bind("<Leave>", lambda e: self._koloruj(kolor_tla))
+            widget.bind("<Button-1>", lambda e: polecenie())
+        self.kolor_tla = kolor_tla
+
+    def _koloruj(self, kolor):
+        self.config(bg=kolor)
+        self.etykieta.config(bg=kolor)
+
+
+class Velyro(BazaOkna):
+    def __init__(self):
+        super().__init__()
+        self.overrideredirect(True)
+        self.geometry("720x560+300+120")
+        self.configure(bg=BG)
+        self.minsize(720, 560)
+
+        self.pliki = []
+        self.folder_wyjsciowy = os.path.join(os.path.expanduser("~"), "Desktop", "Velyro")
+        self.format_docelowy = tk.StringVar(value="mp3")
+        self._przesuniecie = (0, 0)
+        self._zmaksymalizowane = False
+        self._geometria_przed = None
+
+        self._ustaw_ikone_okna()
+        self._pasek_tytulu()
+        self._panel_glowny()
+        self._napraw_pasek_zadan()
+
+    def _ustaw_ikone_okna(self):
+        if ImageTk is None:
+            self.ikona_tytulu = None
+            return
+        try:
+            obraz = Image.open(sciezka_zasobu("velyro_small.png"))
+            self.ikona_tytulu = ImageTk.PhotoImage(obraz)
+            self.iconphoto(True, self.ikona_tytulu)
+        except Exception:
+            self.ikona_tytulu = None
+
+    def _napraw_pasek_zadan(self):
+        if os.name != "nt":
+            return
+        try:
+            self.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            GWL_EXSTYLE = -20
+            WS_EX_APPWINDOW = 0x00040000
+            WS_EX_TOOLWINDOW = 0x00000080
+            styl = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            styl = (styl | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, styl)
+            self.withdraw()
+            self.after(10, self.deiconify)
+        except Exception:
+            pass
+
+    def _pasek_tytulu(self):
+        pasek = tk.Frame(self, bg=BG_PANEL, height=42)
+        pasek.pack(fill="x", side="top")
+        pasek.pack_propagate(False)
+
+        kropki = tk.Frame(pasek, bg=BG_PANEL)
+        kropki.pack(side="left", padx=14)
+        PrzyciskKropka(kropki, "#ff5f57", "#ff8078", self._zamknij).pack(side="left", padx=3)
+        PrzyciskKropka(kropki, "#febc2e", "#ffd060", self._minimalizuj).pack(side="left", padx=3)
+        PrzyciskKropka(kropki, "#28c840", "#5be066", self._maksymalizuj).pack(side="left", padx=3)
+
+        srodek = tk.Frame(pasek, bg=BG_PANEL)
+        srodek.pack(side="left", padx=10)
+        if self.ikona_tytulu is not None:
+            tk.Label(srodek, image=self.ikona_tytulu, bg=BG_PANEL).pack(side="left", padx=(0, 8))
+        tk.Label(srodek, text="Velyro", bg=BG_PANEL, fg=FG,
+                 font=("Segoe UI Semibold", 11)).pack(side="left")
+
+        for widget in (pasek, srodek):
+            widget.bind("<ButtonPress-1>", self._start_przeciagania)
+            widget.bind("<B1-Motion>", self._przeciagaj)
+            widget.bind("<Double-Button-1>", lambda e: self._maksymalizuj())
+
+    def _start_przeciagania(self, event):
+        self._przesuniecie = (event.x_root - self.winfo_x(), event.y_root - self.winfo_y())
+
+    def _przeciagaj(self, event):
+        x = event.x_root - self._przesuniecie[0]
+        y = event.y_root - self._przesuniecie[1]
+        self.geometry(f"+{x}+{y}")
+
+    def _zamknij(self):
+        self.destroy()
+
+    def _minimalizuj(self):
+        if os.name == "nt":
+            try:
+                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                ctypes.windll.user32.ShowWindow(hwnd, 6)
+                return
+            except Exception:
+                pass
+        self.iconify()
+
+    def _maksymalizuj(self):
+        if not self._zmaksymalizowane:
+            self._geometria_przed = self.geometry()
+            szer = self.winfo_screenwidth()
+            wys = self.winfo_screenheight()
+            self.geometry(f"{szer}x{wys}+0+0")
+            self._zmaksymalizowane = True
+        else:
+            if self._geometria_przed:
+                self.geometry(self._geometria_przed)
+            self._zmaksymalizowane = False
+
+    def _sekcja(self, rodzic, tytul):
+        etykieta = tk.Label(rodzic, text=tytul, bg=BG, fg=FG_MUTED,
+                             font=("Segoe UI", 9, "bold"))
+        etykieta.pack(anchor="w", pady=(14, 6))
+        return etykieta
+
+    def _panel_glowny(self):
+        glowny = tk.Frame(self, bg=BG, padx=20, pady=6)
+        glowny.pack(fill="both", expand=True)
+
+        self._sekcja(glowny, "PLIKI")
+
+        obszar_listy = tk.Frame(glowny, bg=BORDER, padx=1, pady=1)
+        obszar_listy.pack(fill="both", expand=True)
+
+        self.lista = tk.Listbox(obszar_listy, bg=BG_INPUT, fg=FG, borderwidth=0,
+                                 highlightthickness=0, selectbackground=ACCENT,
+                                 selectforeground=FG, font=("Segoe UI", 9), height=10)
+        self.lista.pack(fill="both", expand=True)
+
+        if OBSLUGA_DND:
+            self.lista.drop_target_register(DND_FILES)
+            self.lista.dnd_bind("<<Drop>>", self._upuszczono_pliki)
+            self.podpowiedz = tk.Label(glowny, text="Przeciągnij pliki tutaj lub użyj przycisku poniżej",
+                                        bg=BG, fg=FG_MUTED, font=("Segoe UI", 8, "italic"))
+        else:
+            self.podpowiedz = tk.Label(glowny, text="Użyj przycisku poniżej, aby dodać pliki",
+                                        bg=BG, fg=FG_MUTED, font=("Segoe UI", 8, "italic"))
+        self.podpowiedz.pack(anchor="w", pady=(4, 0))
+
+        rzad_przyciskow = tk.Frame(glowny, bg=BG)
+        rzad_przyciskow.pack(fill="x", pady=(10, 0))
+        PrzyciskAkcji(rzad_przyciskow, "Dodaj pliki", self.dodaj_pliki, wypelniony=False).pack(side="left")
+        PrzyciskAkcji(rzad_przyciskow, "Wyczyść", self.wyczysc_liste, wypelniony=False).pack(side="left", padx=8)
+
+        self._sekcja(glowny, "USTAWIENIA KONWERSJI")
+
+        rzad_ustawien = tk.Frame(glowny, bg=BG)
+        rzad_ustawien.pack(fill="x")
+
+        tk.Label(rzad_ustawien, text="Format docelowy", bg=BG, fg=FG,
+                 font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
+        self.menu_formatow = tk.OptionMenu(rzad_ustawien, self.format_docelowy,
+                                            *(AUDIO_VIDEO_TARGETS + IMAGE_TARGETS))
+        self.menu_formatow.config(bg=BG_INPUT, fg=FG, activebackground=ACCENT,
+                                   activeforeground=FG, borderwidth=0, highlightthickness=1,
+                                   highlightbackground=BORDER, font=("Segoe UI", 9), width=10)
+        self.menu_formatow["menu"].config(bg=BG_INPUT, fg=FG)
+        self.menu_formatow.grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        tk.Label(rzad_ustawien, text="Folder docelowy", bg=BG, fg=FG,
+                 font=("Segoe UI", 9)).grid(row=0, column=1, sticky="w", padx=(30, 0))
+        self.etykieta_folder = tk.Label(rzad_ustawien, text=self._skroc_folder(),
+                                         bg=BG, fg=FG_MUTED, font=("Segoe UI", 8))
+        self.etykieta_folder.grid(row=1, column=1, sticky="w", padx=(30, 0), pady=(4, 0))
+        PrzyciskAkcji(rzad_ustawien, "Zmień", self.wybierz_folder, wypelniony=False).grid(
+            row=1, column=2, sticky="w", padx=(12, 0), pady=(4, 0))
+
+        self.przycisk_start = PrzyciskAkcji(glowny, "Konwertuj", self.start_konwersji)
+        self.przycisk_start.pack(fill="x", pady=(18, 10), ipady=2)
+
+        self._sekcja(glowny, "DZIENNIK")
+        obszar_log = tk.Frame(glowny, bg=BORDER, padx=1, pady=1)
+        obszar_log.pack(fill="both", expand=False)
+        self.pole_log = tk.Text(obszar_log, height=7, bg=BG_INPUT, fg=ACCENT, borderwidth=0,
+                                 highlightthickness=0, font=("Consolas", 9), state="disabled")
+        self.pole_log.pack(fill="both", expand=True)
+
+    def _skroc_folder(self):
+        sciezka = self.folder_wyjsciowy
+        if len(sciezka) > 42:
+            return "..." + sciezka[-39:]
+        return sciezka
+
+    def log(self, tekst):
+        self.pole_log.config(state="normal")
+        self.pole_log.insert("end", tekst + "\n")
+        self.pole_log.see("end")
+        self.pole_log.config(state="disabled")
+
+    def _upuszczono_pliki(self, event):
+        surowe = self.tk.splitlist(event.data)
+        for plik in surowe:
+            if os.path.isfile(plik) and plik not in self.pliki:
+                self.pliki.append(plik)
+                self.lista.insert("end", os.path.basename(plik))
+
+    def dodaj_pliki(self):
+        wybrane = filedialog.askopenfilenames(title="Wybierz pliki do konwersji")
+        for plik in wybrane:
+            if plik not in self.pliki:
+                self.pliki.append(plik)
+                self.lista.insert("end", os.path.basename(plik))
+
+    def wyczysc_liste(self):
+        self.pliki.clear()
+        self.lista.delete(0, "end")
+
+    def wybierz_folder(self):
+        folder = filedialog.askdirectory(title="Wybierz folder docelowy")
+        if folder:
+            self.folder_wyjsciowy = folder
+            self.etykieta_folder.config(text=self._skroc_folder())
+
+    def start_konwersji(self):
+        if not self.pliki:
+            messagebox.showwarning("Uwaga", "Nie dodano żadnych plików.")
+            return
+        os.makedirs(self.folder_wyjsciowy, exist_ok=True)
+        watek = threading.Thread(target=self._konwertuj_wszystkie, daemon=True)
+        watek.start()
+
+    def _konwertuj_wszystkie(self):
+        format_docelowy = self.format_docelowy.get()
+        udane = 0
+        bledy = 0
+        for plik in self.pliki:
+            rozszerzenie = os.path.splitext(plik)[1].lower()
+            try:
+                if rozszerzenie in VIDEO_AUDIO_EXT and format_docelowy in AUDIO_VIDEO_TARGETS:
+                    konwertuj_audio_wideo(plik, self.folder_wyjsciowy, format_docelowy, self.log)
+                elif rozszerzenie in IMAGE_EXT and format_docelowy in IMAGE_TARGETS:
+                    konwertuj_obraz(plik, self.folder_wyjsciowy, format_docelowy, self.log)
+                else:
+                    self.log(f"Pominięto (niezgodny typ): {os.path.basename(plik)}")
+                    bledy += 1
+                    continue
+                udane += 1
+            except Exception as e:
+                self.log(f"BŁĄD ({os.path.basename(plik)}): {e}")
+                bledy += 1
+        self.log(f"Zakończono. Udane: {udane}, błędy: {bledy}")
+        messagebox.showinfo("Gotowe", f"Konwersja zakończona.\nUdane: {udane}\nBłędy: {bledy}")
+
+
+if __name__ == "__main__":
+    app = Velyro()
+    app.mainloop()

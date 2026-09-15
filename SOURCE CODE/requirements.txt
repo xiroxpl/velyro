@@ -1,0 +1,4 @@
+Pillow
+imageio-ffmpeg
+tkinterdnd2
+pyinstaller
